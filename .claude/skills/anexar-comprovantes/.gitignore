@@ -1,0 +1,8 @@
+# Nunca versionar dados sensíveis desta skill
+sessao/            # perfil/persistência do navegador (contém sessão logada)
+*.env
+.env
+plano.json         # pode conter dados financeiros
+resultado_anexos.json
+config.local.json  # config com URLs/seletores específicos, se quiser manter local
+comprovantes/      # arquivos de comprovantes que você baixar para anexar
