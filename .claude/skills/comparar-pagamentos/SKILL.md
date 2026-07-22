@@ -148,6 +148,10 @@ que é só revisar e clicar Enviar. Não prometa que o e-mail "foi enviado" — 
 foi *preparado*. (Para dados financeiros essa revisão humana costuma ser
 desejável.)
 
+Obs.: a descrição do `create_draft` traz um aviso de que "anexo ainda não é
+suportado", mas na prática o campo `attachments` funciona (testado e
+confirmado) — pode usar sem receio.
+
 Monte a base64 de cada anexo (a ferramenta exige o conteúdo em base64) e crie o
 rascunho:
 
