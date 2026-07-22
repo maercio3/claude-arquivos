@@ -11,8 +11,10 @@ description: >-
   as despesas com os Pix do banco" — mesmo que a pessoa não diga a palavra
   "conciliação". Lida com comprovantes em PDF de texto E em imagem/print (PNG,
   JPG, print de tela), inclusive vários comprovantes num PDF único ou soltos.
-  Gera planilha Excel detalhada + resumo executivo. NÃO use para gerar boletos,
-  emitir notas fiscais ou fazer lançamentos contábeis — é só conferência.
+  Gera planilha Excel detalhada + resumo executivo e, ao final, monta um e-mail
+  (rascunho no Gmail) com a planilha e os comprovantes anexados para o usuário
+  revisar e enviar. NÃO use para gerar boletos, emitir notas fiscais ou fazer
+  lançamentos contábeis — é só conferência.
 ---
 
 # Comparar pagamentos (software de controle) × comprovantes do banco
@@ -132,6 +134,51 @@ Entregue os dois arquivos e resuma em texto: quantos **conferidos**, quantos
 **comprovantes sem lançamento**. Destaque os itens que exigem ação humana
 (faltando comprovante, valor diferente). Se os totais dos dois lados não
 fecharem, diga o valor da diferença.
+
+### Passo 6 — Envie por e-mail (padrão do usuário)
+
+O usuário quer receber a conferência do dia por e-mail, **com a planilha e os
+comprovantes anexados**. Faça isso ao final de toda conferência, salvo se ele
+disser o contrário.
+
+**Importante — é rascunho, não envio automático.** A ferramenta de Gmail
+disponível (`create_draft`) monta o e-mail pronto na caixa "Rascunhos" com os
+anexos, mas **não dispara o envio**. Deixe o rascunho pronto e avise o usuário
+que é só revisar e clicar Enviar. Não prometa que o e-mail "foi enviado" — ele
+foi *preparado*. (Para dados financeiros essa revisão humana costuma ser
+desejável.)
+
+Monte a base64 de cada anexo (a ferramenta exige o conteúdo em base64) e crie o
+rascunho:
+
+```bash
+# gera a base64 de um arquivo para colar no campo "content" do anexo
+base64 -w0 conferencia.xlsx
+```
+
+Chame `create_draft` com:
+- `to`: e-mail(s) de destino. **Padrão: `maercio2@gmail.com`.** Se o usuário
+  pedir outro destinatário (contador, sócio, financeiro), use esse.
+- `subject`: algo como `Conferência de pagamentos — <data> (X conferidos, Y divergentes, Z sem comprovante)`.
+- `body`: o mesmo resumo executivo do `conferencia.md` (conferidos, divergentes
+  e o que exige ação). Assim a pessoa lê o essencial sem abrir o anexo.
+- `attachments`: uma entrada por arquivo, cada uma com `filename`, `mimeType` e
+  `content` (base64):
+  - a planilha `conferencia.xlsx`
+    (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`)
+  - **todos os comprovantes que foram enviados** (as imagens/PDFs originais) —
+    é o que dá lastro à conferência. Use o `mimeType` certo (`image/png`,
+    `image/jpeg`, `application/pdf`).
+  - opcionalmente o relatório do software em PDF.
+
+**Limite de 25MB no total dos anexos.** Se os comprovantes estourarem esse
+limite, não trave: anexe a planilha + resumo e, para os comprovantes, suba-os
+ao Google Drive e coloque o link no corpo do e-mail (ou pergunte ao usuário se
+prefere dividir em mais de um e-mail). Avise o que foi feito.
+
+Se o Gmail não estiver conectado nesta sessão, gere a planilha normalmente,
+avise que não foi possível montar o rascunho e ofereça reenviar quando a conta
+estiver conectada.
 
 ## Como funciona o casamento (para você saber explicar)
 
