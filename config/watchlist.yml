@@ -1,0 +1,44 @@
+# Watchlist da rotina de compras.
+#
+# Esta lista é um ponto de partida — troque pelos produtos que você realmente
+# quer acompanhar. Cada item aceita:
+#
+#   nome           rótulo que aparece no relatório (obrigatório)
+#   termos         o que é digitado na busca (padrão: o próprio nome)
+#   preco_alvo     em reais; abaixo disso o item é destacado no topo
+#   fontes         subconjunto de: mercado_livre, shopee, shein, google_shopping
+#   max_resultados quantas ofertas trazer por loja
+
+padroes:
+  fontes: [mercado_livre, shopee, shein, google_shopping]
+  max_resultados: 6
+
+itens:
+  - nome: Fone Bluetooth TWS
+    termos: fone de ouvido bluetooth tws
+    preco_alvo: 150.00
+    fontes: [mercado_livre, shopee, google_shopping]
+
+  - nome: Smartwatch
+    termos: smartwatch relógio inteligente
+    preco_alvo: 250.00
+    fontes: [mercado_livre, shopee, google_shopping]
+
+  - nome: Camiseta básica algodão
+    termos: camiseta básica algodão masculina
+    preco_alvo: 40.00
+    fontes: [shein, shopee]
+
+  - nome: Tênis de corrida
+    termos: tênis de corrida masculino
+    preco_alvo: 200.00
+
+  - nome: Cafeteira elétrica
+    termos: cafeteira elétrica 30 xícaras
+    preco_alvo: 180.00
+    fontes: [mercado_livre, google_shopping]
+
+  - nome: Organizador de gaveta
+    termos: organizador de gaveta closet
+    preco_alvo: 35.00
+    fontes: [shopee, shein]

@@ -1,0 +1,41 @@
+name: Rotina de compras
+
+# Roda sob demanda. Para agendar todo dia às 8h de Brasília, descomente o bloco
+# abaixo — 11:00 UTC. Os secrets precisam estar configurados no repositório.
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "0 11 * * *"
+
+jobs:
+  pesquisar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Executar a rotina
+        env:
+          ML_ACCESS_TOKEN: ${{ secrets.ML_ACCESS_TOKEN }}
+          PROVEDOR_BUSCA: ${{ vars.PROVEDOR_BUSCA }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORTA: ${{ secrets.SMTP_PORTA }}
+          SMTP_USUARIO: ${{ secrets.SMTP_USUARIO }}
+          SMTP_SENHA: ${{ secrets.SMTP_SENHA }}
+          EMAIL_PARA: ${{ secrets.EMAIL_PARA }}
+        # Sai com 1 quando nenhuma fonte devolveu oferta; não falha o job por isso.
+        run: python -m rotina_compras --email || true
+
+      - name: Publicar o relatório como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorio
+          path: relatorios/
+          if-no-files-found: warn
