@@ -1,0 +1,46 @@
+<!--
+  Modelo de e-mail para o rascunho no Gmail.
+  Preencha os placeholders {{...}} e repita os blocos marcados conforme o número
+  de reuniões / tarefas. Use CSS inline (clientes de e-mail ignoram <style> externo
+  e boa parte do <head>). Mantenha o bloco de "Tarefas em destaque" no topo.
+-->
+<div style="font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#1a1a1a; max-width:640px; margin:0 auto;">
+
+  <!-- Cabeçalho -->
+  <h1 style="font-size:20px; margin:0 0 4px;">Resumos de reunião</h1>
+  <p style="color:#666; font-size:13px; margin:0 0 20px;">
+    {{PERIODO}} · {{QTD_REUNIOES}} reunião(ões) · {{QTD_TAREFAS}} tarefa(s)
+  </p>
+
+  <!-- ✅ TAREFAS EM DESTAQUE (o coração do e-mail — sempre no topo) -->
+  <div style="background:#fff8e1; border:1px solid #ffe082; border-radius:8px; padding:16px 18px; margin:0 0 24px;">
+    <h2 style="font-size:16px; margin:0 0 12px; color:#7a5c00;">✅ Tarefas em destaque</h2>
+    <ul style="margin:0; padding-left:20px; line-height:1.6;">
+      <!-- Repita um <li> por tarefa. Inclua responsável e prazo quando houver. -->
+      <li>
+        <strong>{{TAREFA}}</strong>
+        <span style="color:#555;"> — {{RESPONSAVEL}} · prazo: {{PRAZO}}</span>
+        <span style="color:#999; font-size:12px;"> (Reunião: {{REUNIAO_ORIGEM}})</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- RESUMOS POR REUNIÃO — repita este bloco inteiro por reunião -->
+  <div style="border-top:1px solid #eee; padding-top:16px; margin-bottom:16px;">
+    <h3 style="font-size:15px; margin:0 0 2px;">{{TITULO_REUNIAO}}</h3>
+    <p style="color:#888; font-size:12px; margin:0 0 8px;">
+      {{DATA}} · {{PARTICIPANTES}}
+    </p>
+    <p style="font-size:14px; line-height:1.55; margin:0 0 10px;">{{RESUMO}}</p>
+    <p style="font-size:13px; font-weight:600; margin:0 0 4px; color:#444;">Tarefas desta reunião:</p>
+    <ul style="margin:0; padding-left:20px; font-size:13px; line-height:1.55; color:#333;">
+      <!-- Repita <li> por tarefa desta reunião; ou uma linha "Sem tarefas registradas". -->
+      <li>{{TAREFA}} <span style="color:#777;">— {{RESPONSAVEL}} · {{PRAZO}}</span></li>
+    </ul>
+  </div>
+  <!-- fim do bloco de reunião -->
+
+  <p style="color:#aaa; font-size:11px; margin-top:24px; border-top:1px solid #eee; padding-top:12px;">
+    Gerado a partir das notas de reunião do Notion.
+  </p>
+</div>
