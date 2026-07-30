@@ -1,0 +1,146 @@
+# Configuração do resumo de faturas.
+# Copie para faturas/config.yaml e ajuste. Tudo é opcional exceto `cartoes`.
+#
+# As regras crescem com o uso: sempre que o usuário resolver uma dúvida de
+# classificação, acrescente a regra correspondente aqui para não perguntar de novo.
+
+empresa:
+  nome: "Construtora Exemplo Ltda"
+  cnpj: "00.000.000/0001-00"
+  # Nome curto usado nos relatórios
+  apelido: "Construtora"
+
+pessoa:
+  nome: "Márcio"
+
+# ---------------------------------------------------------------------------
+# Cartões. `final` são os 4 últimos dígitos — nunca guarde o número completo.
+# `titularidade_padrao`: PJ ou PF. É o palpite inicial de todo lançamento do cartão.
+# ---------------------------------------------------------------------------
+cartoes:
+  - final: "1234"
+    apelido: "Itaú Construtora"
+    banco: "Itaú"
+    portador: "Márcio"
+    titularidade_padrao: PJ
+
+  - final: "5678"
+    apelido: "Nubank pessoal"
+    banco: "Nubank"
+    portador: "Márcio"
+    titularidade_padrao: PF
+
+  - final: "9012"
+    apelido: "Adicional obra"
+    banco: "Itaú"
+    portador: "Encarregado"
+    titularidade_padrao: PJ
+    # Cartão de uso exclusivo de uma obra: tudo cai neste centro de custo
+    centro_custo_padrao: "OBRA-01"
+
+# ---------------------------------------------------------------------------
+# Obras / centros de custo ativos.
+# `apelidos` são pedaços de texto que, se aparecerem na descrição do lançamento,
+# indicam a obra (útil quando o fornecedor põe a referência na descrição).
+# ---------------------------------------------------------------------------
+obras:
+  - codigo: "OBRA-01"
+    nome: "Residencial Alfa"
+    apelidos: ["alfa", "res alfa"]
+    status: ativa
+
+  - codigo: "OBRA-02"
+    nome: "Galpão Beta"
+    apelidos: ["beta", "galpao beta"]
+    status: ativa
+
+  - codigo: "ADM"
+    nome: "Administrativo / escritório"
+    apelidos: ["escritorio"]
+    status: ativa
+
+# ---------------------------------------------------------------------------
+# Regras de classificação por estabelecimento.
+#
+# `match`     regex (sem diferenciar maiúsculas/acentos) aplicada ao estabelecimento
+# `forca`     forte  -> vence o padrão do cartão (use quando o sinal é inequívoco)
+#             fraca  -> só decide se o cartão não tiver padrão; se discordar do
+#                       cartão, marca confiança baixa e vai para revisão
+# ---------------------------------------------------------------------------
+regras:
+  # --- PJ: construtora ---------------------------------------------------
+  - match: "leroy merlin|telhanorte|obramax|c&c|casa show|balaroti|chatuba"
+    categoria: "Material de construção"
+    titularidade: PJ
+    forca: forte
+
+  - match: "votorantim|cimento|aco|gerdau|arcelor|vergalhao|areia|brita|concreto"
+    categoria: "Material de construção"
+    titularidade: PJ
+    forca: forte
+
+  - match: "tramontina|makita|bosch|vonder|ferramenta|epi|capacete"
+    categoria: "Ferramentas e EPI"
+    titularidade: PJ
+    forca: forte
+
+  - match: "locacao|loca[cç][aã]o|betoneira|andaime|escoramento|mills|armac"
+    categoria: "Locação de equipamentos"
+    titularidade: PJ
+    forca: forte
+
+  - match: "crea|art |cau |cartorio|prefeitura|iss |alvara|licenca"
+    categoria: "Taxas, licenças e cartório"
+    titularidade: PJ
+    forca: forte
+
+  - match: "autocad|autodesk|sienge|revit|sketchup|eberick|altoqi"
+    categoria: "Software técnico"
+    titularidade: PJ
+    forca: forte
+
+  - match: "posto|ipiranga|shell|petrobras|br mania|combustivel|sem parar|conectcar"
+    categoria: "Combustível e pedágio"
+    titularidade: PJ
+    forca: fraca      # pode ser abastecimento pessoal — deixa o cartão decidir
+
+  # --- PF: pessoal -------------------------------------------------------
+  - match: "netflix|spotify|disney|hbo|max |globoplay|amazon prime|youtube premium"
+    categoria: "Assinaturas e lazer"
+    titularidade: PF
+    forca: forte
+
+  - match: "colegio|escola|faculdade|mensalidade escolar"
+    categoria: "Educação"
+    titularidade: PF
+    forca: forte
+
+  - match: "drogaria|drogasil|pacheco|farmacia|laboratorio|unimed|hospital"
+    categoria: "Saúde e farmácia"
+    titularidade: PF
+    forca: forte
+
+  - match: "carrefour|assai|atacadao|pao de acucar|supermercado|mercado |hortifruti"
+    categoria: "Supermercado"
+    titularidade: PF
+    forca: fraca      # compra de rancho de obra também cai aqui
+
+  - match: "ifood|rappi|restaurante|padaria|lanchonete|burger|pizzaria"
+    categoria: "Alimentação"
+    titularidade: PF
+    forca: fraca      # refeição de equipe em obra é PJ
+
+  # --- Financeiro (segue a titularidade do cartão) -----------------------
+  - match: "anuidade|juros|iof|multa|encargo|rotativo|seguro cartao"
+    categoria: "Financeiro do cartão"
+    forca: fraca
+
+# ---------------------------------------------------------------------------
+# Preferências de relatório
+# ---------------------------------------------------------------------------
+relatorio:
+  moeda: "BRL"
+  top_lancamentos: 10
+  # Lançamentos acima deste valor nunca são classificados automaticamente com
+  # confiança baixa sem aparecer na lista de revisão.
+  limite_revisao_obrigatoria: 500.00

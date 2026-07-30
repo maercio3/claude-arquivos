@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# Faturas: os PDFs originais e os relatórios gerados ficam fora do git.
+# O config.yaml e os lancamentos.csv continuam versionados de propósito — são
+# eles que guardam as regras de classificação já decididas e permitem comparar
+# um mês com o outro. Se preferir não versionar nem os lançamentos, troque
+# estas linhas por "faturas/" e mantenha só o config.yaml com "!faturas/config.yaml".
+faturas/**/*.pdf
+faturas/**/*.ofx
+faturas/**/resumo.*
