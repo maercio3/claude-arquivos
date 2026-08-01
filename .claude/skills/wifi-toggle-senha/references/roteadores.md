@@ -96,12 +96,15 @@ Nao e no roteador, e no controlador: `Settings` > `WiFi` > selecione a rede >
 Depois que descobrir o caminho certo, grave na config para as proximas vezes:
 
 ```bash
-python3 scripts/wifi_toggle.py config \
+python3 scripts/wifi_toggle.py config --rede casa \
   --painel-url http://192.168.15.1 \
   --modelo "Askey RTF3505VW" \
   --caminho-menu "Wi-Fi > Seguranca > Chave WPA"
 ```
 
-`config` altera so os campos informados: as senhas, o historico e o slot ativo
-continuam como estavam. (`init --force` existe, mas reescreve tudo e reseta o
-estado — use so para comecar do zero.)
+`config` altera so os campos informados daquela rede: as senhas, o historico e o
+slot ativo continuam como estavam. (`init --force` existe, mas recria a rede do
+zero e reseta o estado dela — use so quando for comecar de novo.)
+
+Com varias redes cadastradas, cada uma guarda seu proprio `caminho_menu`, entao
+vale preencher o de cada roteador uma vez.

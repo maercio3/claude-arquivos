@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Alterna a senha do Wi-Fi entre duas senhas fixas (A e B).
+"""Alterna a senha do Wi-Fi entre duas senhas fixas (A e B), em uma ou varias redes.
 
-O script nao mexe no roteador: ele guarda qual das duas senhas esta valendo,
+Cada rede cadastrada tem seu proprio par de senhas e seu proprio estado, entao
+trocar a senha de casa nao mexe na do escritorio.
+
+O script nao acessa o roteador: ele guarda qual das duas senhas esta valendo,
 mostra a proxima e so registra a troca depois que voce confirma que aplicou no
 painel. Assim o estado nunca fica mentindo sobre a rede real.
 
 Uso tipico:
-    python3 wifi_toggle.py init --ssid CasaWiFi --painel-url http://192.168.0.1
-    python3 wifi_toggle.py status
-    python3 wifi_toggle.py trocar
-    python3 wifi_toggle.py confirmar
+    python3 wifi_toggle.py init --rede casa --ssid CasaWiFi
+    python3 wifi_toggle.py redes
+    python3 wifi_toggle.py trocar --rede casa
+    python3 wifi_toggle.py confirmar --rede casa
 """
 
 from __future__ import annotations
@@ -18,12 +21,15 @@ import argparse
 import getpass
 import json
 import os
+import re
 import stat
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
 SLOTS = ("a", "b")
+VERSAO = 2
 HISTORICO_MAX = 50
 
 
@@ -74,52 +80,145 @@ def erro(msg: str, codigo: int = 1) -> None:
     raise SystemExit(codigo)
 
 
+def apelido_de(texto: str) -> str:
+    """Transforma um SSID em um apelido curto e digitavel (CasaWiFi -> casawifi)."""
+    limpo = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
+    limpo = re.sub(r"[^A-Za-z0-9]+", "-", limpo).strip("-").lower()
+    return limpo or "rede"
+
+
 # --------------------------------------------------------------------------
-# Config e estado
+# Config, estado e migracao
 # --------------------------------------------------------------------------
 
-def carregar_config() -> dict:
+def _migrar_v1(cfg: dict, estado: dict) -> tuple[dict, dict]:
+    """Converte o formato antigo (uma rede so, campos na raiz) para o de varias."""
+    chave = apelido_de(cfg.get("ssid", "rede"))
+    nova_cfg = {
+        "versao": VERSAO,
+        "rede_padrao": chave,
+        "redes": {
+            chave: {
+                "ssid": cfg.get("ssid"),
+                "painel_url": cfg.get("painel_url"),
+                "modelo_roteador": cfg.get("modelo_roteador"),
+                "caminho_menu": cfg.get("caminho_menu"),
+                "senhas": cfg.get("senhas", {}),
+                "criada_em": cfg.get("criada_em") or agora(),
+            }
+        },
+    }
+    novo_estado = {
+        "versao": VERSAO,
+        "redes": {
+            chave: {
+                "ativa": estado.get("ativa", "a"),
+                "alterada_em": estado.get("alterada_em"),
+                "pendente": estado.get("pendente"),
+                "historico": estado.get("historico", []),
+            }
+        },
+    }
+    return nova_cfg, novo_estado
+
+
+def carregar_tudo(exigir_config: bool = True) -> tuple[dict, dict]:
     caminho = config_path()
     if not caminho.exists():
-        erro(f"config nao encontrada em {caminho}. Rode `init` primeiro.", 2)
+        if exigir_config:
+            erro(f"config nao encontrada em {caminho}. Rode `init` primeiro.", 2)
+        return {"versao": VERSAO, "rede_padrao": None, "redes": {}}, {"versao": VERSAO, "redes": {}}
+
     cfg = _ler_json(caminho)
-    for slot in SLOTS:
-        if not cfg.get("senhas", {}).get(slot, {}).get("senha"):
-            erro(f"config sem a senha do slot {slot.upper()}. Rode `init` de novo.", 2)
-    return cfg
+    estado = _ler_json(state_path()) if state_path().exists() else {}
+
+    if "redes" not in cfg:  # formato antigo
+        cfg, estado = _migrar_v1(cfg, estado)
+        _escrever_json_seguro(caminho, cfg)
+        _escrever_json_seguro(state_path(), estado)
+
+    estado.setdefault("versao", VERSAO)
+    estado.setdefault("redes", {})
+    return cfg, estado
 
 
-def carregar_estado() -> dict:
-    caminho = state_path()
-    if not caminho.exists():
-        return {"ativa": "a", "alterada_em": None, "pendente": None, "historico": []}
-    return _ler_json(caminho)
+def salvar_config(cfg: dict) -> None:
+    _escrever_json_seguro(config_path(), cfg)
 
 
 def salvar_estado(estado: dict) -> None:
-    estado["historico"] = estado.get("historico", [])[-HISTORICO_MAX:]
+    for st in estado.get("redes", {}).values():
+        st["historico"] = st.get("historico", [])[-HISTORICO_MAX:]
     _escrever_json_seguro(state_path(), estado)
 
 
-def rotulo(cfg: dict, slot: str) -> str:
-    return cfg["senhas"][slot].get("rotulo") or f"senha {slot.upper()}"
+def resolver_rede(cfg: dict, pedido: str | None) -> str:
+    """Aceita o apelido ou o proprio SSID; sem pedido, usa a padrao ou a unica."""
+    redes = cfg.get("redes", {})
+    if not redes:
+        erro("nenhuma rede cadastrada. Rode `init` primeiro.", 2)
+
+    if pedido:
+        alvo = pedido.strip().lower()
+        for chave in redes:
+            if chave.lower() == alvo:
+                return chave
+        por_ssid = [k for k, r in redes.items() if (r.get("ssid") or "").lower() == alvo]
+        if len(por_ssid) == 1:
+            return por_ssid[0]
+        if len(por_ssid) > 1:
+            erro(f"mais de uma rede usa o SSID '{pedido}': {', '.join(por_ssid)}. "
+                 "Use o apelido.", 8)
+        erro(f"rede '{pedido}' nao encontrada. Cadastradas: {', '.join(redes)}.", 8)
+
+    if len(redes) == 1:
+        return next(iter(redes))
+    padrao = cfg.get("rede_padrao")
+    if padrao in redes:
+        return padrao
+    erro(f"ha {len(redes)} redes cadastradas e nenhuma padrao definida. "
+         f"Use --rede com uma destas: {', '.join(redes)}.", 8)
 
 
-def senha(cfg: dict, slot: str) -> str:
-    return cfg["senhas"][slot]["senha"]
+def estado_da_rede(estado: dict, chave: str) -> dict:
+    st = estado.setdefault("redes", {}).setdefault(
+        chave, {"ativa": "a", "alterada_em": None, "pendente": None, "historico": []}
+    )
+    st.setdefault("historico", [])
+    return st
+
+
+def rede_cfg(cfg: dict, chave: str) -> dict:
+    return cfg["redes"][chave]
+
+
+def rotulo(rede: dict, slot: str) -> str:
+    return rede["senhas"][slot].get("rotulo") or f"senha {slot.upper()}"
+
+
+def senha(rede: dict, slot: str) -> str:
+    return rede["senhas"][slot]["senha"]
 
 
 def outro(slot: str) -> str:
     return "b" if slot == "a" else "a"
 
 
-def wifi_uri(cfg: dict, slot: str) -> str:
+def wifi_uri(rede: dict, slot: str) -> str:
     """String padrao de QR code de Wi-Fi (WPA)."""
     def esc(v: str) -> str:
         for ch in ("\\", ";", ",", ":", '"'):
             v = v.replace(ch, "\\" + ch)
         return v
-    return f"WIFI:T:WPA;S:{esc(cfg['ssid'])};P:{esc(senha(cfg, slot))};;"
+    return f"WIFI:T:WPA;S:{esc(rede['ssid'])};P:{esc(senha(rede, slot))};;"
+
+
+def validar_par(senha_a: str, senha_b: str) -> None:
+    if senha_a == senha_b:
+        erro("as duas senhas sao iguais — nao haveria troca nenhuma.", 5)
+    for nome, valor in (("A", senha_a), ("B", senha_b)):
+        if len(valor) < 8:
+            erro(f"a senha {nome} tem menos de 8 caracteres e o WPA2 nao aceita.", 5)
 
 
 # --------------------------------------------------------------------------
@@ -133,19 +232,24 @@ def responder(dados: dict, texto: list[str], como_json: bool) -> None:
         print("\n".join(texto))
 
 
-def passos(cfg: dict, slot_destino: str) -> list[str]:
+def passos(rede: dict, slot_destino: str) -> list[str]:
     """Passo a passo para aplicar a senha no painel do roteador."""
-    modelo = cfg.get("modelo_roteador") or "seu roteador"
-    url = cfg.get("painel_url") or "o endereco do painel (geralmente http://192.168.0.1)"
-    caminho_menu = cfg.get("caminho_menu") or "Wireless / Wi-Fi > Seguranca (WPA2/WPA3)"
+    modelo = rede.get("modelo_roteador") or "seu roteador"
+    url = rede.get("painel_url") or "o endereco do painel (geralmente http://192.168.0.1)"
+    caminho_menu = rede.get("caminho_menu") or "Wireless / Wi-Fi > Seguranca (WPA2/WPA3)"
     return [
         f"1. Abra {url} no navegador e entre no painel do {modelo}.",
         f"2. Va em: {caminho_menu}.",
-        f"3. Troque a senha da rede '{cfg['ssid']}' para: {senha(cfg, slot_destino)}",
+        f"3. Troque a senha da rede '{rede['ssid']}' para: {senha(rede, slot_destino)}",
         "4. Salve e espere o roteador aplicar (alguns reiniciam o radio; a rede cai por alguns segundos).",
         "5. Reconecte um aparelho para confirmar que a senha nova funciona.",
         "6. Volte aqui e confirme a troca para eu registrar o estado.",
     ]
+
+
+def cabecalho(cfg: dict, chave: str) -> str:
+    rede = rede_cfg(cfg, chave)
+    return f"Rede: {rede['ssid']} (apelido: {chave})"
 
 
 # --------------------------------------------------------------------------
@@ -153,9 +257,11 @@ def passos(cfg: dict, slot_destino: str) -> list[str]:
 # --------------------------------------------------------------------------
 
 def cmd_init(args) -> None:
-    caminho = config_path()
-    if caminho.exists() and not args.force:
-        erro(f"ja existe config em {caminho}. Use --force para sobrescrever.", 3)
+    cfg, estado = carregar_tudo(exigir_config=False)
+    chave = (args.rede or apelido_de(args.ssid)).strip().lower()
+    if chave in cfg.get("redes", {}) and not args.force:
+        erro(f"a rede '{chave}' ja esta cadastrada. Use --force para recriar, "
+             "`config` para so ajustar campos, ou --rede com outro apelido.", 3)
 
     def pedir_senha(slot: str, valor: str | None) -> str:
         if valor:
@@ -170,14 +276,11 @@ def cmd_init(args) -> None:
 
     senha_a = pedir_senha("a", args.senha_a)
     senha_b = pedir_senha("b", args.senha_b)
+    validar_par(senha_a, senha_b)
 
-    if senha_a == senha_b:
-        erro("as duas senhas sao iguais — nao haveria troca nenhuma.", 5)
-    for nome, valor in (("A", senha_a), ("B", senha_b)):
-        if len(valor) < 8:
-            erro(f"a senha {nome} tem menos de 8 caracteres e o WPA2 nao aceita.", 5)
-
-    cfg = {
+    cfg.setdefault("versao", VERSAO)
+    cfg.setdefault("redes", {})
+    cfg["redes"][chave] = {
         "ssid": args.ssid,
         "painel_url": args.painel_url,
         "modelo_roteador": args.modelo,
@@ -188,9 +291,11 @@ def cmd_init(args) -> None:
         },
         "criada_em": agora(),
     }
-    _escrever_json_seguro(caminho, cfg)
+    if args.padrao or not cfg.get("rede_padrao") or len(cfg["redes"]) == 1:
+        cfg["rede_padrao"] = chave
+    salvar_config(cfg)
 
-    estado = {
+    estado.setdefault("redes", {})[chave] = {
         "ativa": args.ativa,
         "alterada_em": agora(),
         "pendente": None,
@@ -198,17 +303,89 @@ def cmd_init(args) -> None:
     }
     salvar_estado(estado)
 
+    rede = rede_cfg(cfg, chave)
     texto = [
-        f"Config criada em {caminho} (permissao 600).",
-        f"Rede: {cfg['ssid']} | slot ativo agora: {args.ativa.upper()} ({rotulo(cfg, args.ativa)})",
-        "Rode `trocar` quando quiser alternar para a outra senha.",
+        f"Rede '{args.ssid}' cadastrada com o apelido '{chave}' em {config_path()} (permissao 600).",
+        f"Slot ativo agora: {args.ativa.upper()} ({rotulo(rede, args.ativa)})",
     ]
-    responder({"ok": True, "config": str(caminho), "ativa": args.ativa}, texto, args.json)
+    if cfg["rede_padrao"] == chave and len(cfg["redes"]) > 1:
+        texto.append(f"Esta rede virou a padrao (usada quando voce nao passar --rede).")
+    elif len(cfg["redes"]) > 1:
+        texto.append(f"Rede padrao continua sendo '{cfg['rede_padrao']}'. "
+                     f"Para trocar esta aqui, use --rede {chave}.")
+    texto.append("Rode `trocar` quando quiser alternar para a outra senha.")
+    responder(
+        {"ok": True, "rede": chave, "ssid": args.ssid, "ativa": args.ativa,
+         "rede_padrao": cfg["rede_padrao"], "config": str(config_path())},
+        texto, args.json,
+    )
+
+
+def cmd_redes(args) -> None:
+    cfg, estado = carregar_tudo()
+    itens = []
+    texto = []
+    for chave, rede in cfg["redes"].items():
+        st = estado_da_rede(estado, chave)
+        ativa = st.get("ativa", "a")
+        padrao = chave == cfg.get("rede_padrao")
+        itens.append({
+            "rede": chave,
+            "ssid": rede.get("ssid"),
+            "padrao": padrao,
+            "ativa": ativa,
+            "rotulo_ativa": rotulo(rede, ativa),
+            "alterada_em": st.get("alterada_em"),
+            "pendente": st.get("pendente"),
+        })
+        linha = (f"{'*' if padrao else ' '} {chave} — {rede.get('ssid')} | "
+                 f"slot {ativa.upper()} ({rotulo(rede, ativa)})")
+        if st.get("pendente"):
+            linha += f" | TROCA PENDENTE para {st['pendente']['para'].upper()}"
+        texto.append(linha)
+    if texto:
+        texto.append("")
+        texto.append("(* = rede padrao, usada quando voce nao passa --rede)")
+    else:
+        texto = ["Nenhuma rede cadastrada. Rode `init`."]
+    responder({"redes": itens, "rede_padrao": cfg.get("rede_padrao")}, texto, args.json)
+
+
+def cmd_padrao(args) -> None:
+    cfg, _ = carregar_tudo()
+    chave = resolver_rede(cfg, args.rede)
+    cfg["rede_padrao"] = chave
+    salvar_config(cfg)
+    texto = [f"Rede padrao agora e '{chave}' ({rede_cfg(cfg, chave)['ssid']})."]
+    responder({"ok": True, "rede_padrao": chave}, texto, args.json)
+
+
+def cmd_remover(args) -> None:
+    cfg, estado = carregar_tudo()
+    chave = resolver_rede(cfg, args.rede)
+    if not args.confirmar:
+        erro(f"remover '{chave}' apaga as duas senhas e o historico dela. "
+             "Repita com --confirmar se e isso mesmo.", 9)
+    ssid = rede_cfg(cfg, chave).get("ssid")
+    del cfg["redes"][chave]
+    estado.get("redes", {}).pop(chave, None)
+    if cfg.get("rede_padrao") not in cfg["redes"]:
+        cfg["rede_padrao"] = next(iter(cfg["redes"]), None)
+    salvar_config(cfg)
+    salvar_estado(estado)
+    texto = [f"Rede '{chave}' ({ssid}) removida."]
+    if cfg.get("rede_padrao"):
+        texto.append(f"Rede padrao agora e '{cfg['rede_padrao']}'.")
+    responder({"ok": True, "removida": chave, "rede_padrao": cfg.get("rede_padrao")},
+              texto, args.json)
 
 
 def cmd_config(args) -> None:
-    """Ajusta campos nao secretos sem exigir redigitar as senhas."""
-    cfg = carregar_config()
+    """Ajusta campos de uma rede sem exigir redigitar as senhas."""
+    cfg, _ = carregar_tudo()
+    chave = resolver_rede(cfg, args.rede)
+    rede = rede_cfg(cfg, chave)
+
     campos = {
         "ssid": args.ssid,
         "painel_url": args.painel_url,
@@ -216,183 +393,190 @@ def cmd_config(args) -> None:
         "caminho_menu": args.caminho_menu,
     }
     alterados = {k: v for k, v in campos.items() if v is not None}
-    cfg.update(alterados)
+    rede.update(alterados)
     for slot, novo in (("a", args.rotulo_a), ("b", args.rotulo_b)):
         if novo is not None:
-            cfg["senhas"][slot]["rotulo"] = novo
+            rede["senhas"][slot]["rotulo"] = novo
             alterados[f"rotulo_{slot}"] = novo
     for slot, nova in (("a", args.senha_a), ("b", args.senha_b)):
         if nova is not None:
-            if len(nova) < 8:
-                erro(f"a senha {slot.upper()} tem menos de 8 caracteres e o WPA2 nao aceita.", 5)
-            cfg["senhas"][slot]["senha"] = nova
+            rede["senhas"][slot]["senha"] = nova
             alterados[f"senha_{slot}"] = "(atualizada)"
-    if senha(cfg, "a") == senha(cfg, "b"):
-        erro("as duas senhas ficariam iguais — nao haveria troca nenhuma.", 5)
+    if args.senha_a is not None or args.senha_b is not None:
+        validar_par(senha(rede, "a"), senha(rede, "b"))
 
     if not alterados:
-        responder({"ok": True, "alterados": {}}, ["Nada para alterar."], args.json)
+        responder({"ok": True, "rede": chave, "alterados": {}},
+                  [f"Nada para alterar em '{chave}'."], args.json)
         return
 
-    cfg["atualizada_em"] = agora()
-    _escrever_json_seguro(config_path(), cfg)
-    texto = ["Config atualizada:"] + [f"  {k} = {v}" for k, v in alterados.items()]
-    responder({"ok": True, "alterados": alterados}, texto, args.json)
+    rede["atualizada_em"] = agora()
+    salvar_config(cfg)
+    texto = [f"Config da rede '{chave}' atualizada:"] + [f"  {k} = {v}" for k, v in alterados.items()]
+    responder({"ok": True, "rede": chave, "alterados": alterados}, texto, args.json)
 
 
 def cmd_status(args) -> None:
-    cfg = carregar_config()
-    estado = carregar_estado()
-    ativa = estado.get("ativa", "a")
-    pendente = estado.get("pendente")
+    cfg, estado = carregar_tudo()
+    chave = resolver_rede(cfg, args.rede)
+    rede = rede_cfg(cfg, chave)
+    st = estado_da_rede(estado, chave)
+    ativa = st.get("ativa", "a")
+    pendente = st.get("pendente")
 
     dados = {
-        "ssid": cfg["ssid"],
+        "rede": chave,
+        "ssid": rede["ssid"],
         "ativa": ativa,
-        "rotulo_ativa": rotulo(cfg, ativa),
-        "alterada_em": estado.get("alterada_em"),
+        "rotulo_ativa": rotulo(rede, ativa),
+        "alterada_em": st.get("alterada_em"),
         "pendente": pendente,
         "proxima": outro(pendente["para"] if pendente else ativa),
-        "senha_ativa": senha(cfg, ativa) if args.revelar else None,
+        "senha_ativa": senha(rede, ativa) if args.revelar else None,
+        "total_redes": len(cfg["redes"]),
+        "rede_padrao": cfg.get("rede_padrao"),
     }
     texto = [
-        f"Rede: {cfg['ssid']}",
-        f"Senha ativa: slot {ativa.upper()} ({rotulo(cfg, ativa)})",
-        f"Desde: {estado.get('alterada_em') or 'nunca registrado'}",
+        cabecalho(cfg, chave),
+        f"Senha ativa: slot {ativa.upper()} ({rotulo(rede, ativa)})",
+        f"Desde: {st.get('alterada_em') or 'nunca registrado'}",
     ]
     if args.revelar:
-        texto.append(f"Senha: {senha(cfg, ativa)}")
+        texto.append(f"Senha: {senha(rede, ativa)}")
     if pendente:
         texto.append(
             f"ATENCAO: existe troca pendente para o slot {pendente['para'].upper()} "
-            f"({rotulo(cfg, pendente['para'])}), iniciada em {pendente['quando']}."
+            f"({rotulo(rede, pendente['para'])}), iniciada em {pendente['quando']}."
         )
         texto.append("Rode `confirmar` se ja aplicou no painel, ou `cancelar` se desistiu.")
     else:
         texto.append(
-            f"Proxima troca vai para o slot {outro(ativa).upper()} ({rotulo(cfg, outro(ativa))})."
+            f"Proxima troca vai para o slot {outro(ativa).upper()} ({rotulo(rede, outro(ativa))})."
         )
+    if len(cfg["redes"]) > 1 and not args.rede:
+        texto.append(f"(usando a rede padrao '{chave}'; ha {len(cfg['redes'])} cadastradas — "
+                     "veja `redes`)")
     responder(dados, texto, args.json)
 
 
 def cmd_trocar(args) -> None:
-    cfg = carregar_config()
-    estado = carregar_estado()
-    pendente = estado.get("pendente")
+    cfg, estado = carregar_tudo()
+    chave = resolver_rede(cfg, args.rede)
+    rede = rede_cfg(cfg, chave)
+    st = estado_da_rede(estado, chave)
+    pendente = st.get("pendente")
 
     if pendente and not args.reiniciar:
         destino = pendente["para"]
         texto = [
+            cabecalho(cfg, chave),
             f"Ja havia uma troca pendente para o slot {destino.upper()} "
-            f"({rotulo(cfg, destino)}), aberta em {pendente['quando']}.",
+            f"({rotulo(rede, destino)}), aberta em {pendente['quando']}.",
             "Repetindo os passos (nada foi alterado no estado):",
-            *passos(cfg, destino),
+            *passos(rede, destino),
         ]
     else:
-        destino = args.para or outro(estado.get("ativa", "a"))
-        if destino not in SLOTS:
-            erro(f"slot invalido: {destino}. Use 'a' ou 'b'.", 6)
-        if destino == estado.get("ativa"):
-            erro(f"o slot {destino.upper()} ja e o ativo — nao ha o que trocar.", 6)
-        pendente = {"para": destino, "de": estado.get("ativa", "a"), "quando": agora()}
-        estado["pendente"] = pendente
+        destino = args.para or outro(st.get("ativa", "a"))
+        if destino == st.get("ativa"):
+            erro(f"o slot {destino.upper()} ja e o ativo na rede '{chave}' — "
+                 "nao ha o que trocar.", 6)
+        pendente = {"para": destino, "de": st.get("ativa", "a"), "quando": agora()}
+        st["pendente"] = pendente
         salvar_estado(estado)
         texto = [
-            f"Trocar a senha da rede '{cfg['ssid']}' para o slot {destino.upper()} "
-            f"({rotulo(cfg, destino)}):",
+            cabecalho(cfg, chave),
+            f"Trocar a senha para o slot {destino.upper()} ({rotulo(rede, destino)}):",
             "",
-            *passos(cfg, destino),
+            *passos(rede, destino),
         ]
 
     dados = {
         "ok": True,
+        "rede": chave,
+        "ssid": rede["ssid"],
         "destino": destino,
-        "rotulo_destino": rotulo(cfg, destino),
-        "senha_destino": senha(cfg, destino),
-        "wifi_uri": wifi_uri(cfg, destino),
-        "passos": passos(cfg, destino),
+        "rotulo_destino": rotulo(rede, destino),
+        "senha_destino": senha(rede, destino),
+        "wifi_uri": wifi_uri(rede, destino),
+        "passos": passos(rede, destino),
         "pendente": pendente,
     }
-    texto += ["", f"QR code (string padrao Wi-Fi): {wifi_uri(cfg, destino)}"]
+    texto += ["", f"QR code (string padrao Wi-Fi): {wifi_uri(rede, destino)}"]
     responder(dados, texto, args.json)
 
 
 def cmd_confirmar(args) -> None:
-    cfg = carregar_config()
-    estado = carregar_estado()
-    pendente = estado.get("pendente")
+    cfg, estado = carregar_tudo()
+    chave = resolver_rede(cfg, args.rede)
+    rede = rede_cfg(cfg, chave)
+    st = estado_da_rede(estado, chave)
+    pendente = st.get("pendente")
 
     if not pendente and not args.para:
-        erro("nao ha troca pendente. Rode `trocar` primeiro (ou use --para a|b).", 7)
+        erro(f"nao ha troca pendente na rede '{chave}'. "
+             "Rode `trocar` primeiro (ou use --para a|b).", 7)
 
     destino = args.para or pendente["para"]
-    if destino not in SLOTS:
-        erro(f"slot invalido: {destino}. Use 'a' ou 'b'.", 6)
-
-    anterior = estado.get("ativa", "a")
-    estado["ativa"] = destino
-    estado["alterada_em"] = agora()
-    estado["pendente"] = None
-    estado.setdefault("historico", []).append(
-        {"quando": agora(), "evento": "troca", "de": anterior, "para": destino}
-    )
+    anterior = st.get("ativa", "a")
+    st["ativa"] = destino
+    st["alterada_em"] = agora()
+    st["pendente"] = None
+    st["historico"].append({"quando": agora(), "evento": "troca", "de": anterior, "para": destino})
     salvar_estado(estado)
 
     texto = [
-        f"Registrado: a rede '{cfg['ssid']}' esta agora com o slot {destino.upper()} "
-        f"({rotulo(cfg, destino)}).",
-        f"Na proxima vez que rodar `trocar`, volta para o slot {outro(destino).upper()} "
-        f"({rotulo(cfg, outro(destino))}).",
+        f"Registrado: a rede '{rede['ssid']}' esta agora com o slot {destino.upper()} "
+        f"({rotulo(rede, destino)}).",
+        f"Na proxima vez que rodar `trocar` nela, volta para o slot {outro(destino).upper()} "
+        f"({rotulo(rede, outro(destino))}).",
     ]
-    responder(
-        {"ok": True, "ativa": destino, "anterior": anterior, "alterada_em": estado["alterada_em"]},
-        texto,
-        args.json,
-    )
+    responder({"ok": True, "rede": chave, "ativa": destino, "anterior": anterior,
+               "alterada_em": st["alterada_em"]}, texto, args.json)
 
 
 def cmd_cancelar(args) -> None:
-    estado = carregar_estado()
-    if not estado.get("pendente"):
-        responder({"ok": True, "cancelado": False}, ["Nao havia troca pendente."], args.json)
+    cfg, estado = carregar_tudo()
+    chave = resolver_rede(cfg, args.rede)
+    st = estado_da_rede(estado, chave)
+    if not st.get("pendente"):
+        responder({"ok": True, "rede": chave, "cancelado": False},
+                  [f"Nao havia troca pendente na rede '{chave}'."], args.json)
         return
-    pendente = estado["pendente"]
-    estado["pendente"] = None
-    estado.setdefault("historico", []).append(
-        {"quando": agora(), "evento": "cancelada", "para": pendente["para"]}
-    )
+    pendente = st["pendente"]
+    st["pendente"] = None
+    st["historico"].append({"quando": agora(), "evento": "cancelada", "para": pendente["para"]})
     salvar_estado(estado)
     texto = [
-        f"Troca pendente para o slot {pendente['para'].upper()} cancelada. "
-        f"O estado continua no slot {estado.get('ativa', 'a').upper()}."
+        f"Troca pendente para o slot {pendente['para'].upper()} cancelada na rede '{chave}'. "
+        f"O estado continua no slot {st.get('ativa', 'a').upper()}."
     ]
-    responder({"ok": True, "cancelado": True, "ativa": estado.get("ativa")}, texto, args.json)
+    responder({"ok": True, "rede": chave, "cancelado": True, "ativa": st.get("ativa")},
+              texto, args.json)
 
 
 def cmd_mostrar(args) -> None:
-    cfg = carregar_config()
-    estado = carregar_estado()
-    slot = args.slot or estado.get("ativa", "a")
-    if slot not in SLOTS:
-        erro(f"slot invalido: {slot}. Use 'a' ou 'b'.", 6)
+    cfg, estado = carregar_tudo()
+    chave = resolver_rede(cfg, args.rede)
+    rede = rede_cfg(cfg, chave)
+    st = estado_da_rede(estado, chave)
+    slot = args.slot or st.get("ativa", "a")
     texto = [
-        f"Slot {slot.upper()} ({rotulo(cfg, slot)}) da rede '{cfg['ssid']}': {senha(cfg, slot)}",
-        f"QR code (string padrao Wi-Fi): {wifi_uri(cfg, slot)}",
+        f"Slot {slot.upper()} ({rotulo(rede, slot)}) da rede '{rede['ssid']}': {senha(rede, slot)}",
+        f"QR code (string padrao Wi-Fi): {wifi_uri(rede, slot)}",
     ]
-    responder(
-        {"slot": slot, "rotulo": rotulo(cfg, slot), "senha": senha(cfg, slot),
-         "wifi_uri": wifi_uri(cfg, slot)},
-        texto,
-        args.json,
-    )
+    responder({"rede": chave, "slot": slot, "rotulo": rotulo(rede, slot),
+               "senha": senha(rede, slot), "wifi_uri": wifi_uri(rede, slot)}, texto, args.json)
 
 
 def cmd_historico(args) -> None:
-    estado = carregar_estado()
-    itens = estado.get("historico", [])[-args.n:]
+    cfg, estado = carregar_tudo()
+    chave = resolver_rede(cfg, args.rede)
+    itens = estado_da_rede(estado, chave).get("historico", [])[-args.n:]
     if not itens:
-        responder({"historico": []}, ["Sem historico ainda."], args.json)
+        responder({"rede": chave, "historico": []},
+                  [f"Sem historico ainda na rede '{chave}'."], args.json)
         return
+
     def linha(i: dict) -> str:
         base = f"{i['quando']} — {i['evento']}"
         if i.get("de") and i.get("para"):
@@ -401,8 +585,8 @@ def cmd_historico(args) -> None:
             return f"{base}: slot {i['para'].upper()}"
         return base
 
-    texto = [linha(i) for i in itens]
-    responder({"historico": itens}, texto, args.json)
+    responder({"rede": chave, "historico": itens},
+              [f"Historico da rede '{chave}':"] + [linha(i) for i in itens], args.json)
 
 
 def cmd_doctor(args) -> None:
@@ -417,6 +601,20 @@ def cmd_doctor(args) -> None:
                 f"config com permissao {oct(modo)} — outros usuarios conseguem ler as senhas. "
                 f"Corrija com: chmod 600 {caminho}"
             )
+        cfg, estado = carregar_tudo()
+        if len(cfg.get("redes", {})) > 1 and cfg.get("rede_padrao") not in cfg["redes"]:
+            problemas.append("ha varias redes e nenhuma padrao definida — "
+                             "use `padrao --rede NOME` ou passe --rede sempre.")
+        for chave, st in estado.get("redes", {}).items():
+            if st.get("pendente"):
+                problemas.append(
+                    f"a rede '{chave}' tem uma troca pendente desde {st['pendente']['quando']} — "
+                    "confirme ou cancele para o estado voltar a refletir a realidade."
+                )
+        orfas = set(estado.get("redes", {})) - set(cfg.get("redes", {}))
+        if orfas:
+            problemas.append(f"estado com redes que nao existem mais na config: {', '.join(orfas)}.")
+
     for pai in [base_dir(), *base_dir().parents]:
         if (pai / ".git").exists():
             problemas.append(
@@ -424,7 +622,9 @@ def cmd_doctor(args) -> None:
                 "as senhas podem acabar commitadas. Mova para fora ou ignore no .gitignore."
             )
             break
-    texto = problemas or ["Tudo certo: config presente, permissao restrita, fora de repositorio git."]
+
+    texto = problemas or ["Tudo certo: config presente, permissao restrita, "
+                          "sem pendencias e fora de repositorio git."]
     responder({"ok": not problemas, "problemas": problemas}, texto, args.json)
 
 
@@ -435,7 +635,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="saida em JSON")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    i = sub.add_parser("init", help="cria a config com as duas senhas")
+    # parent com --rede para os comandos que operam em uma rede
+    uma_rede = argparse.ArgumentParser(add_help=False)
+    uma_rede.add_argument("--rede", default=None,
+                          help="apelido ou SSID da rede (padrao: a rede padrao)")
+
+    i = sub.add_parser("init", help="cadastra uma rede com as duas senhas")
+    i.add_argument("--rede", default=None, help="apelido curto (padrao: derivado do SSID)")
     i.add_argument("--ssid", required=True)
     i.add_argument("--painel-url", default=None, help="ex: http://192.168.0.1")
     i.add_argument("--modelo", default=None, help="ex: TP-Link Archer C6")
@@ -445,10 +651,22 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--rotulo-a", default="senha principal")
     i.add_argument("--rotulo-b", default="senha alternativa")
     i.add_argument("--ativa", choices=SLOTS, default="a", help="qual senha esta valendo hoje")
-    i.add_argument("--force", action="store_true")
+    i.add_argument("--padrao", action="store_true", help="torna esta a rede padrao")
+    i.add_argument("--force", action="store_true", help="recria uma rede ja cadastrada")
     i.set_defaults(func=cmd_init)
 
-    g = sub.add_parser("config", help="ajusta campos da config sem mexer no estado")
+    r = sub.add_parser("redes", help="lista as redes cadastradas e o slot ativo de cada uma")
+    r.set_defaults(func=cmd_redes)
+
+    d0 = sub.add_parser("padrao", parents=[uma_rede], help="define a rede padrao")
+    d0.set_defaults(func=cmd_padrao)
+
+    rm = sub.add_parser("remover", parents=[uma_rede], help="apaga uma rede cadastrada")
+    rm.add_argument("--confirmar", action="store_true")
+    rm.set_defaults(func=cmd_remover)
+
+    g = sub.add_parser("config", parents=[uma_rede],
+                       help="ajusta campos da rede sem mexer no estado")
     g.add_argument("--ssid", default=None)
     g.add_argument("--painel-url", default=None)
     g.add_argument("--modelo", default=None)
@@ -459,32 +677,33 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--senha-b", default=None, help="troca a senha do slot B")
     g.set_defaults(func=cmd_config)
 
-    s = sub.add_parser("status", help="mostra qual senha esta ativa")
+    s = sub.add_parser("status", parents=[uma_rede], help="mostra qual senha esta ativa")
     s.add_argument("--revelar", action="store_true", help="mostra a senha em texto")
     s.set_defaults(func=cmd_status)
 
-    t = sub.add_parser("trocar", help="abre uma troca para a outra senha")
+    t = sub.add_parser("trocar", parents=[uma_rede], help="abre uma troca para a outra senha")
     t.add_argument("--para", choices=SLOTS, default=None)
     t.add_argument("--reiniciar", action="store_true", help="descarta a pendencia anterior")
     t.set_defaults(func=cmd_trocar)
 
-    c = sub.add_parser("confirmar", help="registra que a troca foi aplicada no roteador")
+    c = sub.add_parser("confirmar", parents=[uma_rede],
+                       help="registra que a troca foi aplicada no roteador")
     c.add_argument("--para", choices=SLOTS, default=None)
     c.set_defaults(func=cmd_confirmar)
 
-    x = sub.add_parser("cancelar", help="descarta a troca pendente")
+    x = sub.add_parser("cancelar", parents=[uma_rede], help="descarta a troca pendente")
     x.set_defaults(func=cmd_cancelar)
 
-    m = sub.add_parser("mostrar", help="mostra a senha de um slot")
+    m = sub.add_parser("mostrar", parents=[uma_rede], help="mostra a senha de um slot")
     m.add_argument("--slot", choices=SLOTS, default=None)
     m.set_defaults(func=cmd_mostrar)
 
-    h = sub.add_parser("historico", help="ultimas trocas registradas")
+    h = sub.add_parser("historico", parents=[uma_rede], help="ultimas trocas registradas")
     h.add_argument("-n", type=int, default=10)
     h.set_defaults(func=cmd_historico)
 
-    d = sub.add_parser("doctor", help="checa config, permissoes e riscos")
-    d.set_defaults(func=cmd_doctor)
+    doc = sub.add_parser("doctor", help="checa config, permissoes e riscos")
+    doc.set_defaults(func=cmd_doctor)
 
     return p
 
